@@ -19,7 +19,7 @@ SEED_DATA = [
         "auth_method": "sql_login",
         "username": "rule4",
         "secret_ref": "env:RULE4_SS_PASSWORD",
-        "extra_attrs": json.dumps({"TrustServerCertificate": "yes"}),
+        "extra_attrs": json.dumps({"TrustServerCertificate": "yes", "LoginTimeout": "10"}),
         "notes": "SQL Server 2017 on Docker/Rosetta",
     },
     {
