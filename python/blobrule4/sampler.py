@@ -18,6 +18,7 @@ The sampler:
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -25,44 +26,23 @@ from datetime import datetime, timezone
 import duckdb
 import sqlalchemy as sa
 
-from blobrule4.models import (
-    Base,
-    CallableSampleLog,
-    ColumnSampleLog,
-    Dataserver,
-    ForeignKeySampleLog,
-    IndexSampleLog,
-    PrimaryKeySampleLog,
-    TableSampleLog,
-    TriggerSampleLog,
-)
-
-# Map catalog query names to sample log tables
-QUERY_TO_TABLE = {
-    "tables": TableSampleLog,
-    "columns": ColumnSampleLog,
-    "primary_keys": PrimaryKeySampleLog,
-    "foreign_keys": ForeignKeySampleLog,
-    "indexes": IndexSampleLog,
-    "triggers": TriggerSampleLog,
-    "callables": CallableSampleLog,
-}
+from blobrule4.models import Base, Dataserver, SAMPLE_LOG_CLASSES
 
 EXTENSION_PATH = None  # Set at runtime
 
 
-def find_extension():
-    """Locate the blobodbc DuckDB extension."""
+def find_extensions():
+    """Locate blobodbc and blobtemplates DuckDB extensions."""
     import os
-    candidates = [
-        os.path.join(os.path.dirname(__file__), "..", "..", "build", "duckdb", "blobodbc.duckdb_extension"),
-        os.path.join(os.path.dirname(__file__), "..", "build", "duckdb", "blobodbc.duckdb_extension"),
-    ]
-    for c in candidates:
-        p = os.path.realpath(c)
-        if os.path.exists(p):
-            return p
-    raise FileNotFoundError("Cannot find blobodbc.duckdb_extension")
+    checkouts = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    result = {}
+    for name in ["blobodbc", "blobtemplates"]:
+        path = os.path.join(checkouts, name, "build", "duckdb", f"{name}.duckdb_extension")
+        if os.path.exists(path):
+            result[name] = path
+        else:
+            raise FileNotFoundError(f"Cannot find {name}.duckdb_extension at {path}")
+    return result
 
 
 def build_conn_str(ds):
@@ -191,7 +171,7 @@ def sample_schema(duck, ds_id, conn_str, catalog_name, schema_name,
     sample_time = datetime.now(timezone.utc).isoformat()
     sampled = 0
 
-    for query_name, log_class in QUERY_TO_TABLE.items():
+    for query_name, log_class in SAMPLE_LOG_CLASSES.items():
         table_name = log_class.__tablename__
 
         # Find the catalog query — prefer dialect-specific, fall back to information_schema
@@ -240,11 +220,13 @@ def main():
     parser.add_argument("--extension", help="Path to blobodbc.duckdb_extension")
     args = parser.parse_args()
 
-    ext_path = args.extension or find_extension()
-
-    # Open DuckDB and load extension
+    # Open DuckDB and load extensions
     duck = duckdb.connect(args.database, config={"allow_unsigned_extensions": "true"})
-    duck.execute(f"LOAD '{ext_path}'")
+    if args.extension:
+        duck.execute(f"LOAD '{args.extension}'")
+    else:
+        for name, path in find_extensions().items():
+            duck.execute(f"LOAD '{path}'")
 
     # Create tables — generate DDL from SA models using DuckDB dialect
     from duckdb_engine import Dialect as DuckDBDialect
@@ -254,20 +236,33 @@ def main():
             dialect=mock_dialect))
         duck.execute(ddl)
 
-    # Load catalog queries from the extension's reference table
+    # Load catalog queries from YAML files
+    import yaml
+    catalog_dir = os.path.join(os.path.dirname(__file__), "..", "..", "catalog")
+    catalog_dir = os.path.realpath(catalog_dir)
     catalog_queries = {}
-    for row in duck.execute(
-        "SELECT dialect, name, sql, where_fragments FROM blobodbc.catalog_queries"
-    ).fetchall():
-        catalog_queries[(row[0], row[1])] = {
-            "sql": row[2],
-            "where_fragments": row[3],
-        }
+    for dialect in os.listdir(catalog_dir):
+        dialect_dir = os.path.join(catalog_dir, dialect)
+        if not os.path.isdir(dialect_dir) or dialect.startswith("."):
+            continue
+        for fname in os.listdir(dialect_dir):
+            if not fname.endswith(".yml"):
+                continue
+            with open(os.path.join(dialect_dir, fname)) as f:
+                spec = yaml.safe_load(f)
+            where_frags = {}
+            for pname, pspec in spec.get("parameters", {}).items():
+                if "where" in pspec:
+                    where_frags[pname] = pspec["where"]
+            catalog_queries[(dialect, fname.replace(".yml", ""))] = {
+                "sql": spec.get("sql", "").rstrip(),
+                "where_fragments": json.dumps(where_frags),
+            }
 
-    print(f"Loaded {len(catalog_queries)} catalog queries", file=sys.stderr)
+    print(f"Loaded {len(catalog_queries)} catalog queries from {catalog_dir}", file=sys.stderr)
 
     # Get dataservers from DuckDB directly
-    ds_query = "SELECT dataserver_id, name, driver, host, port, default_catalog, auth_method, username, secret_ref, extra_attrs FROM dataserver"
+    ds_query = "SELECT dataserver_id, name, driver, host, port, default_catalog, auth_method, username, secret_ref, extra_attrs FROM rule4_dataserver"
     if args.dataserver:
         ds_query += f" WHERE name = '{args.dataserver}'"
 

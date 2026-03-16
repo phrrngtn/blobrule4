@@ -20,8 +20,7 @@ import os
 
 import duckdb
 
-from blobrule4.models import Base
-from blobrule4.ttst_models import SchemaSnapshot, SchemaSnapshotPatch
+from blobrule4.models import Base, SchemaSnapshot, SchemaSnapshotPatch, SAMPLE_LOG_CLASSES
 
 # Nesting keys per kind — determines the nested JSON structure
 # and therefore the semantic quality of the diffs
@@ -43,34 +42,28 @@ STRIP_FIELDS = {
     "table_catalog",     # redundant (I_S tier)
 }
 
-# Map sample log table names to kinds
-LOG_TABLES = {
-    "tables": "table_sample_log",
-    "columns": "column_sample_log",
-    "primary_keys": "primary_key_sample_log",
-    "foreign_keys": "foreign_key_sample_log",
-    "indexes": "index_sample_log",
-    "triggers": "trigger_sample_log",
-    "callables": "callable_sample_log",
-}
+# Derive LOG_TABLES from the model classes
+LOG_TABLES = {kind: cls.__tablename__ for kind, cls in SAMPLE_LOG_CLASSES.items()}
 
 
-def find_extension():
+def find_extensions():
+    """Locate blobodbc and blobtemplates DuckDB extensions."""
     import os
-    candidates = [
-        os.path.join(os.path.dirname(__file__), "..", "..", "build", "duckdb", "blobodbc.duckdb_extension"),
-    ]
-    for c in candidates:
-        p = os.path.realpath(c)
-        if os.path.exists(p):
-            return p
-    raise FileNotFoundError("Cannot find blobodbc.duckdb_extension")
+    checkouts = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    result = {}
+    for name in ["blobodbc", "blobtemplates"]:
+        path = os.path.join(checkouts, name, "build", "duckdb", f"{name}.duckdb_extension")
+        if os.path.exists(path):
+            result[name] = path
+        else:
+            raise FileNotFoundError(f"Cannot find {name}.duckdb_extension at {path}")
+    return result
 
 
 def ensure_tables(duck):
     """Create TTST tables if they don't exist."""
     duck.execute("""
-        CREATE TABLE IF NOT EXISTS schema_snapshot (
+        CREATE TABLE IF NOT EXISTS rule4_schema_snapshot (
             dataserver_id INTEGER NOT NULL,
             catalog_name VARCHAR NOT NULL,
             schema_name VARCHAR NOT NULL,
@@ -82,7 +75,7 @@ def ensure_tables(duck):
         )
     """)
     duck.execute("""
-        CREATE TABLE IF NOT EXISTS schema_snapshot_patch (
+        CREATE TABLE IF NOT EXISTS rule4_schema_snapshot_patch (
             dataserver_id INTEGER NOT NULL,
             catalog_name VARCHAR NOT NULL,
             schema_name VARCHAR NOT NULL,
@@ -115,7 +108,7 @@ def intern_sample(duck, dataserver_id, catalog_name, schema_name, kind,
 
     # Get current snapshot (if any)
     existing = duck.execute(
-        "SELECT revision_num, snapshot FROM schema_snapshot "
+        "SELECT revision_num, snapshot FROM rule4_schema_snapshot "
         "WHERE dataserver_id = ? AND catalog_name = ? "
         "AND schema_name = ? AND kind = ?",
         [dataserver_id, catalog_name, schema_name, kind]
@@ -124,7 +117,7 @@ def intern_sample(duck, dataserver_id, catalog_name, schema_name, kind,
     if existing is None:
         # First sample — create initial snapshot
         duck.execute(
-            "INSERT INTO schema_snapshot "
+            "INSERT INTO rule4_schema_snapshot "
             "(dataserver_id, catalog_name, schema_name, kind, revision_num, snapshot, captured_at) "
             "VALUES (?, ?, ?, ?, 1, ?, ?)",
             [dataserver_id, catalog_name, schema_name, kind, nested, sample_time]
@@ -151,7 +144,7 @@ def intern_sample(duck, dataserver_id, catalog_name, schema_name, kind,
 
     # Store reverse patch (keyed by the revision we're transitioning FROM)
     duck.execute(
-        "INSERT INTO schema_snapshot_patch "
+        "INSERT INTO rule4_schema_snapshot_patch "
         "(dataserver_id, catalog_name, schema_name, kind, revision_num, patch, captured_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         [dataserver_id, catalog_name, schema_name, kind,
@@ -160,7 +153,7 @@ def intern_sample(duck, dataserver_id, catalog_name, schema_name, kind,
 
     # Update snapshot to new state
     duck.execute(
-        "UPDATE schema_snapshot SET revision_num = ?, snapshot = ?, captured_at = ? "
+        "UPDATE rule4_schema_snapshot SET revision_num = ?, snapshot = ?, captured_at = ? "
         "WHERE dataserver_id = ? AND catalog_name = ? "
         "AND schema_name = ? AND kind = ?",
         [new_rev, nested, sample_time,
@@ -174,7 +167,7 @@ def reconstruct_at_revision(duck, dataserver_id, catalog_name, schema_name,
                              kind, target_rev):
     """Reconstruct the snapshot at a specific revision by applying reverse patches."""
     current = duck.execute(
-        "SELECT revision_num, snapshot FROM schema_snapshot "
+        "SELECT revision_num, snapshot FROM rule4_schema_snapshot "
         "WHERE dataserver_id = ? AND catalog_name = ? "
         "AND schema_name = ? AND kind = ?",
         [dataserver_id, catalog_name, schema_name, kind]
@@ -193,7 +186,7 @@ def reconstruct_at_revision(duck, dataserver_id, catalog_name, schema_name,
 
     # Apply reverse patches from current_rev down to target_rev + 1
     patches = duck.execute(
-        "SELECT revision_num, patch FROM schema_snapshot_patch "
+        "SELECT revision_num, patch FROM rule4_schema_snapshot_patch "
         "WHERE dataserver_id = ? AND catalog_name = ? "
         "AND schema_name = ? AND kind = ? "
         "AND revision_num <= ? AND revision_num > ? "
@@ -220,7 +213,7 @@ def intern_all(duck, verbose=True):
             SELECT l.dataserver_id, l.catalog_name, l.schema_name,
                    l.sample_time, l.payload
             FROM {log_table} AS l
-            LEFT JOIN schema_snapshot AS s
+            LEFT JOIN rule4_schema_snapshot AS s
                 ON s.dataserver_id = l.dataserver_id
                AND s.catalog_name = l.catalog_name
                AND s.schema_name = l.schema_name
@@ -247,9 +240,12 @@ def main():
                         help="Reconstruct snapshot at revision (for testing)")
     args = parser.parse_args()
 
-    ext_path = args.extension or find_extension()
     duck = duckdb.connect(args.database, config={"allow_unsigned_extensions": "true"})
-    duck.execute(f"LOAD '{ext_path}'")
+    if args.extension:
+        duck.execute(f"LOAD '{args.extension}'")
+    else:
+        for name, path in find_extensions().items():
+            duck.execute(f"LOAD '{path}'")
 
     ensure_tables(duck)
 
@@ -258,7 +254,7 @@ def main():
         # Find the first matching snapshot
         row = duck.execute(
             "SELECT DISTINCT dataserver_id, catalog_name, schema_name "
-            "FROM schema_snapshot WHERE kind = ? LIMIT 1", [kind]
+            "FROM rule4_schema_snapshot WHERE kind = ? LIMIT 1", [kind]
         ).fetchone()
         if row:
             doc = reconstruct_at_revision(duck, row[0], row[1], row[2], kind, rev)
@@ -275,7 +271,7 @@ def main():
     stats = duck.execute("""
         SELECT kind, revision_num, captured_at,
                length(snapshot) AS snapshot_bytes
-        FROM schema_snapshot
+        FROM rule4_schema_snapshot
         ORDER BY kind
     """).fetchall()
     print(f"\nSnapshot summary:", file=sys.stderr)
@@ -286,7 +282,7 @@ def main():
     patch_stats = duck.execute("""
         SELECT kind, COUNT(*) AS patches,
                SUM(length(patch)) AS total_patch_bytes
-        FROM schema_snapshot_patch
+        FROM rule4_schema_snapshot_patch
         GROUP BY kind
         ORDER BY kind
     """).fetchall()
