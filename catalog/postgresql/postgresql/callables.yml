@@ -1,0 +1,40 @@
+name: callables
+description: User functions and procedures with parameter signatures, return types, and source
+dialect: postgresql
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "nsp.nspname = :schema_name"
+  object_name:
+    type: string
+    required: false
+    description: Object name filter. Omit for all callables.
+    where: "p.proname = :object_name"
+sql: |
+  SELECT
+      nsp.nspname                         AS object_schema,
+      p.proname                           AS object_name,
+      CASE p.prokind
+          WHEN 'f' THEN 'FUNCTION'
+          WHEN 'p' THEN 'PROCEDURE'
+          WHEN 'a' THEN 'AGGREGATE'
+          WHEN 'w' THEN 'WINDOW FUNCTION'
+      END                                 AS type_desc,
+      p.provolatile                       AS volatility,
+      p.proisstrict                       AS is_strict,
+      p.proretset                         AS returns_set,
+      format_type(p.prorettype, NULL)     AS return_type,
+      p.pronargs                          AS arg_count,
+      p.pronargdefaults                   AS default_arg_count,
+      pg_get_function_arguments(p.oid)    AS argument_signature,
+      pg_get_function_result(p.oid)       AS result_signature,
+      l.lanname                           AS language,
+      pg_get_functiondef(p.oid)           AS object_definition
+  FROM pg_proc AS p
+  JOIN pg_namespace AS nsp ON nsp.oid = p.pronamespace
+  JOIN pg_language AS l ON l.oid = p.prolang
+  WHERE nsp.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+    AND nsp.nspname NOT LIKE 'pg_temp_%'
+    AND nsp.nspname NOT LIKE 'pg_toast_temp_%'

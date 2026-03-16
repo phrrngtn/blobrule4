@@ -1,0 +1,32 @@
+name: primary_keys
+description: All primary key constraints with column ordinals
+dialect: postgresql
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "nsp.nspname = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "cl.relname = :table_name"
+sql: |
+  SELECT
+      con.conname                AS constraint_name,
+      nsp.nspname                AS table_schema,
+      cl.relname                 AS table_name,
+      att.attname                AS column_name,
+      ordinality                 AS key_seq
+  FROM pg_constraint AS con
+  JOIN pg_class AS cl ON cl.oid = con.conrelid
+  JOIN pg_namespace AS nsp ON nsp.oid = cl.relnamespace
+  CROSS JOIN LATERAL unnest(con.conkey)
+      WITH ORDINALITY AS u(attnum, ordinality)
+  JOIN pg_attribute AS att
+      ON att.attrelid = con.conrelid AND att.attnum = u.attnum
+  WHERE con.contype = 'p'
+    AND nsp.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+    AND nsp.nspname NOT LIKE 'pg_temp_%'
+    AND nsp.nspname NOT LIKE 'pg_toast_temp_%'

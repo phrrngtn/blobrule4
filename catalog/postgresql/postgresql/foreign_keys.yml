@@ -1,0 +1,55 @@
+name: foreign_keys
+description: All foreign key constraints with column mappings, update/delete actions
+dialect: postgresql
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "nsp.nspname = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: FK table filter (exact match). Omit for all tables.
+    where: "fk_cl.relname = :table_name"
+sql: |
+  SELECT
+      con.conname                                    AS constraint_name,
+      nsp.nspname                                    AS fk_schema,
+      fk_cl.relname                                  AS fk_table,
+      att.attname                                    AS fk_column,
+      pk_nsp.nspname                                 AS pk_schema,
+      pk_cl.relname                                  AS pk_table,
+      pk_att.attname                                 AS pk_column,
+      ordinality                                     AS key_seq,
+      CASE con.confdeltype
+          WHEN 'a' THEN 'NO ACTION'
+          WHEN 'r' THEN 'RESTRICT'
+          WHEN 'c' THEN 'CASCADE'
+          WHEN 'n' THEN 'SET NULL'
+          WHEN 'd' THEN 'SET DEFAULT'
+      END                                            AS delete_rule,
+      CASE con.confupdtype
+          WHEN 'a' THEN 'NO ACTION'
+          WHEN 'r' THEN 'RESTRICT'
+          WHEN 'c' THEN 'CASCADE'
+          WHEN 'n' THEN 'SET NULL'
+          WHEN 'd' THEN 'SET DEFAULT'
+      END                                            AS update_rule,
+      con.condeferrable                              AS is_deferrable,
+      con.condeferred                                AS is_deferred
+  FROM pg_constraint AS con
+  JOIN pg_class AS fk_cl ON fk_cl.oid = con.conrelid
+  JOIN pg_namespace AS nsp ON nsp.oid = fk_cl.relnamespace
+  JOIN pg_class AS pk_cl ON pk_cl.oid = con.confrelid
+  JOIN pg_namespace AS pk_nsp ON pk_nsp.oid = pk_cl.relnamespace
+  CROSS JOIN LATERAL unnest(con.conkey, con.confkey)
+      WITH ORDINALITY AS u(fk_attnum, pk_attnum, ordinality)
+  JOIN pg_attribute AS att
+      ON att.attrelid = con.conrelid AND att.attnum = u.fk_attnum
+  JOIN pg_attribute AS pk_att
+      ON pk_att.attrelid = con.confrelid AND pk_att.attnum = u.pk_attnum
+  WHERE con.contype = 'f'
+    AND nsp.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+    AND nsp.nspname NOT LIKE 'pg_temp_%'
+    AND nsp.nspname NOT LIKE 'pg_toast_temp_%'

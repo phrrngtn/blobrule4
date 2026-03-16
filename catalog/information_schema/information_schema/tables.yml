@@ -1,0 +1,26 @@
+name: tables
+description: Tables via INFORMATION_SCHEMA (SQL-92 standard, works on SQL Server, PostgreSQL, DuckDB)
+dialect: information_schema
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "table_schema = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "table_name = :table_name"
+  table_type:
+    type: string
+    required: false
+    description: "Table type filter (e.g. 'BASE TABLE', 'VIEW'). Omit for all types."
+    where: "table_type = :table_type"
+sql: |
+  SELECT
+      table_catalog,
+      table_schema,
+      table_name,
+      table_type
+  FROM information_schema.tables

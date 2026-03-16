@@ -1,0 +1,64 @@
+name: tables
+description: User tables with row counts, temporalization, triggers, and CDC tracking
+dialect: sqlserver
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "SCHEMA_NAME(t.schema_id) = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "t.name = :table_name"
+sql: |
+  SELECT
+      SCHEMA_NAME(t.schema_id)  AS table_schema,
+      t.name                    AS table_name,
+      t.type_desc,
+      t.create_date,
+      t.modify_date,
+      p.rows                    AS row_count,
+      t.is_tracked_by_cdc,
+      CASE WHEN ct.object_id IS NOT NULL THEN 1 ELSE 0 END AS is_change_tracked,
+      t.temporal_type_desc,
+      t.history_table_id,
+      CASE WHEN t.history_table_id IS NOT NULL
+           THEN SCHEMA_NAME(ht.schema_id) + '.' + ht.name
+           ELSE NULL
+      END                       AS history_table_name,
+      t.lock_escalation_desc,
+      trig.trigger_count,
+      trig.enabled_trigger_count,
+      trig.instead_of_count,
+      trig.after_insert_count,
+      trig.after_update_count,
+      trig.after_delete_count
+  FROM sys.tables AS t
+  LEFT JOIN sys.partitions AS p
+      ON p.object_id = t.object_id
+     AND p.index_id IN (0, 1)
+  LEFT JOIN sys.change_tracking_tables AS ct
+      ON ct.object_id = t.object_id
+  LEFT JOIN sys.tables AS ht
+      ON ht.object_id = t.history_table_id
+  LEFT JOIN (
+      SELECT
+          parent_id,
+          COUNT(*)                                              AS trigger_count,
+          SUM(CASE WHEN is_disabled = 0 THEN 1 ELSE 0 END)     AS enabled_trigger_count,
+          SUM(CASE WHEN is_instead_of_trigger = 1 THEN 1 ELSE 0 END) AS instead_of_count,
+          SUM(CASE WHEN is_instead_of_trigger = 0
+                    AND OBJECTPROPERTY(object_id, 'ExecIsInsertTrigger') = 1
+                   THEN 1 ELSE 0 END)                          AS after_insert_count,
+          SUM(CASE WHEN is_instead_of_trigger = 0
+                    AND OBJECTPROPERTY(object_id, 'ExecIsUpdateTrigger') = 1
+                   THEN 1 ELSE 0 END)                          AS after_update_count,
+          SUM(CASE WHEN is_instead_of_trigger = 0
+                    AND OBJECTPROPERTY(object_id, 'ExecIsDeleteTrigger') = 1
+                   THEN 1 ELSE 0 END)                          AS after_delete_count
+      FROM sys.triggers
+      WHERE parent_class = 1
+      GROUP BY parent_id
+  ) AS trig ON trig.parent_id = t.object_id

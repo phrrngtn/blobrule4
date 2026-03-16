@@ -1,0 +1,29 @@
+name: primary_keys
+description: All primary key constraints with column ordinals
+dialect: sqlserver
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "SCHEMA_NAME(t.schema_id) = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "t.name = :table_name"
+sql: |
+  SELECT
+      kc.name                              AS constraint_name,
+      SCHEMA_NAME(t.schema_id)             AS table_schema,
+      t.name                               AS table_name,
+      COL_NAME(ic.object_id, ic.column_id) AS column_name,
+      ic.key_ordinal                       AS key_seq,
+      kc.is_system_named
+  FROM sys.key_constraints AS kc
+  JOIN sys.tables AS t
+      ON t.object_id = kc.parent_object_id
+  JOIN sys.index_columns AS ic
+      ON ic.object_id = kc.parent_object_id
+     AND ic.index_id = kc.unique_index_id
+  WHERE kc.type = 'PK'

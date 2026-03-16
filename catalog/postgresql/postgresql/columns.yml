@@ -1,0 +1,44 @@
+name: columns
+description: Column definitions with full type detail, defaults, generated columns
+dialect: postgresql
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "nsp.nspname = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "cl.relname = :table_name"
+sql: |
+  SELECT
+      nsp.nspname                            AS table_schema,
+      cl.relname                             AS table_name,
+      att.attname                            AS column_name,
+      att.attnum                             AS ordinal_position,
+      format_type(att.atttypid, att.atttypmod) AS type_name,
+      att.attnotnull                         AS is_not_null,
+      pg_get_expr(ad.adbin, ad.adrelid)      AS default_definition,
+      att.attgenerated                       AS generated,
+      att.attidentity                        AS identity,
+      col.character_maximum_length,
+      col.numeric_precision,
+      col.numeric_scale,
+      col.collation_name
+  FROM pg_attribute AS att
+  JOIN pg_class AS cl ON cl.oid = att.attrelid
+  JOIN pg_namespace AS nsp ON nsp.oid = cl.relnamespace
+  LEFT JOIN pg_attrdef AS ad
+      ON ad.adrelid = att.attrelid AND ad.adnum = att.attnum
+  LEFT JOIN information_schema.columns AS col
+      ON col.table_schema = nsp.nspname
+     AND col.table_name = cl.relname
+     AND col.column_name = att.attname
+  WHERE cl.relkind IN ('r', 'p')
+    AND att.attnum > 0
+    AND NOT att.attisdropped
+    AND nsp.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+    AND nsp.nspname NOT LIKE 'pg_temp_%'
+    AND nsp.nspname NOT LIKE 'pg_toast_temp_%'

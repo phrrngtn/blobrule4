@@ -1,0 +1,29 @@
+name: columns
+description: Columns via INFORMATION_SCHEMA (SQL-92 standard, works on SQL Server, PostgreSQL, DuckDB)
+dialect: information_schema
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "table_schema = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "table_name = :table_name"
+sql: |
+  SELECT
+      table_catalog,
+      table_schema,
+      table_name,
+      column_name,
+      ordinal_position,
+      column_default,
+      is_nullable,
+      data_type,
+      character_maximum_length,
+      numeric_precision,
+      numeric_scale,
+      datetime_precision
+  FROM information_schema.columns

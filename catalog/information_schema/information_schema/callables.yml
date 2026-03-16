@@ -1,0 +1,24 @@
+name: callables
+description: Routines via INFORMATION_SCHEMA (functions and procedures, portable)
+dialect: information_schema
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "routine_schema = :schema_name"
+  object_name:
+    type: string
+    required: false
+    description: Object name filter. Omit for all callables.
+    where: "routine_name = :object_name"
+sql: |
+  SELECT
+      routine_catalog,
+      routine_schema                      AS object_schema,
+      routine_name                        AS object_name,
+      routine_type                        AS type_desc,
+      data_type                           AS return_type,
+      routine_definition                  AS object_definition
+  FROM information_schema.routines
+  WHERE routine_schema NOT IN ('pg_catalog', 'information_schema', 'sys', 'INFORMATION_SCHEMA')

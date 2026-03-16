@@ -1,0 +1,43 @@
+name: triggers
+description: Trigger definitions with timing, events, function source, and enabled state
+dialect: postgresql
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter on parent table. Omit for all schemas.
+    where: "nsp.nspname = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Parent table filter. Omit for all tables.
+    where: "cl.relname = :table_name"
+sql: |
+  SELECT
+      nsp.nspname                 AS table_schema,
+      cl.relname                  AS table_name,
+      tg.tgname                   AS trigger_name,
+      CASE tg.tgenabled
+          WHEN 'O' THEN 'ORIGIN'
+          WHEN 'D' THEN 'DISABLED'
+          WHEN 'R' THEN 'REPLICA'
+          WHEN 'A' THEN 'ALWAYS'
+      END                         AS enabled_state,
+      CASE WHEN tg.tgtype & 2 != 0 THEN true ELSE false END  AS is_before,
+      CASE WHEN tg.tgtype & 64 != 0 THEN true ELSE false END AS is_instead_of,
+      CASE WHEN tg.tgtype & 4 != 0 THEN true ELSE false END  AS fires_on_insert,
+      CASE WHEN tg.tgtype & 8 != 0 THEN true ELSE false END  AS fires_on_delete,
+      CASE WHEN tg.tgtype & 16 != 0 THEN true ELSE false END AS fires_on_update,
+      CASE WHEN tg.tgtype & 32 != 0 THEN true ELSE false END AS fires_on_truncate,
+      CASE WHEN tg.tgtype & 1 != 0 THEN 'ROW' ELSE 'STATEMENT' END AS trigger_level,
+      fnsp.nspname || '.' || fp.proname AS function_name,
+      pg_get_triggerdef(tg.oid)   AS trigger_definition
+  FROM pg_trigger AS tg
+  JOIN pg_class AS cl ON cl.oid = tg.tgrelid
+  JOIN pg_namespace AS nsp ON nsp.oid = cl.relnamespace
+  JOIN pg_proc AS fp ON fp.oid = tg.tgfoid
+  JOIN pg_namespace AS fnsp ON fnsp.oid = fp.pronamespace
+  WHERE NOT tg.tgisinternal
+    AND nsp.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+    AND nsp.nspname NOT LIKE 'pg_temp_%'
+    AND nsp.nspname NOT LIKE 'pg_toast_temp_%'

@@ -1,0 +1,38 @@
+name: foreign_keys
+description: Foreign keys via INFORMATION_SCHEMA (works on SQL Server, PostgreSQL, DuckDB)
+dialect: information_schema
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: FK schema filter (exact match). Omit for all schemas.
+    where: "fk_kcu.table_schema = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: FK table filter (exact match). Omit for all tables.
+    where: "fk_kcu.table_name = :table_name"
+sql: |
+  SELECT
+      rc.constraint_catalog,
+      rc.constraint_schema,
+      rc.constraint_name    AS fk_name,
+      fk_kcu.table_schema   AS fk_schema,
+      fk_kcu.table_name     AS fk_table,
+      fk_kcu.column_name    AS fk_column,
+      pk_kcu.table_schema   AS pk_schema,
+      pk_kcu.table_name     AS pk_table,
+      pk_kcu.column_name    AS pk_column,
+      fk_kcu.ordinal_position AS key_seq,
+      rc.update_rule,
+      rc.delete_rule
+  FROM information_schema.referential_constraints AS rc
+  JOIN information_schema.key_column_usage AS fk_kcu
+      ON fk_kcu.constraint_catalog = rc.constraint_catalog
+     AND fk_kcu.constraint_schema = rc.constraint_schema
+     AND fk_kcu.constraint_name = rc.constraint_name
+  JOIN information_schema.key_column_usage AS pk_kcu
+      ON pk_kcu.constraint_catalog = rc.unique_constraint_catalog
+     AND pk_kcu.constraint_schema = rc.unique_constraint_schema
+     AND pk_kcu.constraint_name = rc.unique_constraint_name
+     AND pk_kcu.ordinal_position = fk_kcu.ordinal_position

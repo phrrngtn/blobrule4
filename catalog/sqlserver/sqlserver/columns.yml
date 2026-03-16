@@ -1,0 +1,41 @@
+name: columns
+description: Column definitions with full type detail, identity, computed, defaults
+dialect: sqlserver
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "SCHEMA_NAME(t.schema_id) = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "t.name = :table_name"
+sql: |
+  SELECT
+      SCHEMA_NAME(t.schema_id)  AS table_schema,
+      t.name                    AS table_name,
+      c.name                    AS column_name,
+      c.column_id               AS ordinal_position,
+      tp.name                   AS type_name,
+      c.max_length,
+      c.precision,
+      c.scale,
+      c.is_nullable,
+      c.is_identity,
+      c.is_computed,
+      c.collation_name,
+      dc.definition             AS default_definition,
+      cc.definition             AS computed_definition
+  FROM sys.columns AS c
+  JOIN sys.tables AS t
+      ON t.object_id = c.object_id
+  JOIN sys.types AS tp
+      ON tp.user_type_id = c.user_type_id
+  LEFT JOIN sys.default_constraints AS dc
+      ON dc.parent_object_id = c.object_id
+     AND dc.parent_column_id = c.column_id
+  LEFT JOIN sys.computed_columns AS cc
+      ON cc.object_id = c.object_id
+     AND cc.column_id = c.column_id

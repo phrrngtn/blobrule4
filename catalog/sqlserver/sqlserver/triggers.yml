@@ -1,0 +1,36 @@
+name: triggers
+description: Trigger definitions with type, enabled state, and source text
+dialect: sqlserver
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter on parent table. Omit for all schemas.
+    where: "SCHEMA_NAME(t.schema_id) = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Parent table filter. Omit for all tables.
+    where: "t.name = :table_name"
+sql: |
+  SELECT
+      SCHEMA_NAME(t.schema_id)  AS table_schema,
+      t.name                    AS table_name,
+      tr.name                   AS trigger_name,
+      tr.is_disabled,
+      tr.is_instead_of_trigger,
+      te.type_desc              AS event_type,
+      te.is_first               AS is_first_trigger,
+      te.is_last                AS is_last_trigger,
+      OBJECTPROPERTY(tr.object_id, 'ExecIsInsertTrigger')  AS fires_on_insert,
+      OBJECTPROPERTY(tr.object_id, 'ExecIsUpdateTrigger')  AS fires_on_update,
+      OBJECTPROPERTY(tr.object_id, 'ExecIsDeleteTrigger')  AS fires_on_delete,
+      tr.create_date,
+      tr.modify_date,
+      OBJECT_DEFINITION(tr.object_id)  AS trigger_definition
+  FROM sys.triggers AS tr
+  JOIN sys.tables AS t
+      ON t.object_id = tr.parent_id
+  LEFT JOIN sys.trigger_events AS te
+      ON te.object_id = tr.object_id
+  WHERE tr.parent_class = 1

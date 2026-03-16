@@ -1,0 +1,39 @@
+name: indexes
+description: Index definitions with columns, uniqueness, method, and predicates
+dialect: postgresql
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "nsp.nspname = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "t.relname = :table_name"
+sql: |
+  SELECT
+      nsp.nspname                           AS table_schema,
+      t.relname                             AS table_name,
+      i.relname                             AS index_name,
+      am.amname                             AS index_type,
+      ix.indisunique                        AS is_unique,
+      ix.indisprimary                       AS is_primary,
+      att.attname                           AS column_name,
+      ordinality                            AS key_ordinal,
+      CASE WHEN ordinality <= ix.indnkeyatts
+           THEN false ELSE true
+      END                                   AS is_included_column,
+      pg_get_expr(ix.indpred, ix.indrelid)  AS filter_definition,
+      pg_get_indexdef(ix.indexrelid)         AS index_definition
+  FROM pg_index AS ix
+  JOIN pg_class AS t ON t.oid = ix.indrelid
+  JOIN pg_class AS i ON i.oid = ix.indexrelid
+  JOIN pg_namespace AS nsp ON nsp.oid = t.relnamespace
+  JOIN pg_am AS am ON am.oid = i.relam
+  CROSS JOIN LATERAL unnest(ix.indkey)
+      WITH ORDINALITY AS u(attnum, ordinality)
+  JOIN pg_attribute AS att
+      ON att.attrelid = t.oid AND att.attnum = u.attnum
+  WHERE nsp.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
