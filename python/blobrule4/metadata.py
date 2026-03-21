@@ -1,9 +1,34 @@
 """
 SQLAlchemy MetaData generator from rule4 schema snapshots.
 
-Reads rule4_schema_snapshot JSON for a given (dataserver_id, catalog_name,
-schema_name) and produces a sqlalchemy.MetaData populated with Table,
-Column, PrimaryKeyConstraint, ForeignKeyConstraint, and Index objects.
+Two levels of API:
+
+  Low-level (single schema):
+    build_metadata(duck, dataserver_id, catalog, schema) → sa.MetaData
+    Reads TTST snapshots, builds Table/Column/PK/FK/Index objects.
+
+  High-level (evidence-driven federation):
+    SchemaCollection.from_evidence(duck, predicate) → SchemaCollection
+    Queries the fact/evidence layer to discover relevant schemas,
+    builds MetaData per schema, infers cross-source join paths from
+    column name + type compatibility + evidence.
+
+    Usage:
+      coll = SchemaCollection.from_evidence(duck,
+          "fact_type = 'fk_topology_role' AND fact_value LIKE '%finance%'")
+      # or:
+      coll = SchemaCollection.from_schemas(duck, [
+          (1, 'erp_db', 'dbo'),
+          (2, 'reporting_db', 'finance'),
+      ])
+
+      # coll.metadata has all tables from all matching schemas
+      # coll.inferred_joins has cross-schema join candidates
+      orders = coll['dbo.orders']
+      gl = coll['finance.gl_entries']
+      stmt = sa.select(orders, gl).select_from(
+          orders.join(gl, coll.join_condition(orders, gl))
+      )
 
 This is NOT about ORM models for rule4's own tables (see models.py).
 This generates SQLAlchemy representations of TARGET databases that
@@ -578,3 +603,523 @@ def _apply_indexes(tables, idx_snap, schema_name):
                         )
                     except Exception:
                         pass
+
+
+# ── High-level: evidence-driven schema federation ─────────────
+
+# Compatible type pairs for cross-source join inference.
+# If (canonical_a, canonical_b) is in this set, columns can join.
+_COMPATIBLE_TYPES = {
+    frozenset({sat.Integer, sat.Integer}),
+    frozenset({sat.Integer, sat.BigInteger}),
+    frozenset({sat.Integer, sat.SmallInteger}),
+    frozenset({sat.BigInteger, sat.BigInteger}),
+    frozenset({sat.SmallInteger, sat.SmallInteger}),
+    frozenset({sat.String, sat.String}),
+    frozenset({sat.String, sat.Unicode}),
+    frozenset({sat.Unicode, sat.Unicode}),
+    frozenset({sat.Text, sat.Text}),
+    frozenset({sat.Uuid, sat.Uuid}),
+    frozenset({sat.Date, sat.Date}),
+    frozenset({sat.DateTime, sat.DateTime}),
+    frozenset({sat.Numeric, sat.Numeric}),
+}
+
+
+def _types_compatible(type_a, type_b):
+    """Check if two SQLAlchemy column types are join-compatible."""
+    cls_a = type(type_a)
+    cls_b = type(type_b)
+    if cls_a is cls_b:
+        return True
+    return frozenset({cls_a, cls_b}) in _COMPATIBLE_TYPES
+
+
+# ── Composable relation builders ──────────────────────────────
+#
+# Everything below operates on Selectables (Table, subquery, CTE).
+# The building blocks are:
+#
+#   Layer 0 — join_from: produces a FromClause (inner/outer join)
+#   Layer 1 — filters: left_orphans / right_orphans / matched
+#   Layer 2 — projections: profile, top_n, coverage summary
+#
+# Each layer returns a Select that can be .cte()'d, .subquery()'d,
+# or further composed.  Nothing is table-specific — you can pass
+# in a CTE from a previous step and it works.
+
+
+def equi_condition(left, right, column_pairs):
+    """
+    Build an equi-join ON clause between two selectables.
+
+    Parameters
+    ----------
+    left, right : sa.FromClause (Table, subquery, CTE, etc.)
+    column_pairs : list of (left_col_name, right_col_name)
+
+    Returns
+    -------
+    sa.BinaryExpression or sa.BooleanClauseList
+    """
+    clauses = [left.c[lc] == right.c[rc] for lc, rc in column_pairs]
+    return clauses[0] if len(clauses) == 1 else sa.and_(*clauses)
+
+
+def outer_join(left, right, column_pairs):
+    """
+    LEFT OUTER JOIN as a FromClause.  This is the base from which
+    orphan detection and coverage are derived.
+
+    Returns
+    -------
+    sa.Join
+    """
+    return left.outerjoin(right, equi_condition(left, right, column_pairs))
+
+
+def inner_join(left, right, column_pairs):
+    """INNER JOIN as a FromClause."""
+    return left.join(right, equi_condition(left, right, column_pairs))
+
+
+# ── Layer 1: filtered selectables ─────────────────────────────
+
+def left_orphans(left, right, column_pairs):
+    """
+    Rows in `left` with no match in `right`.
+
+    Returns a Select over the outer join, filtered to WHERE right-side
+    key IS NULL.  The result is a full selectable — all left columns
+    are available for further composition.
+    """
+    j = outer_join(left, right, column_pairs)
+    null_check = right.c[column_pairs[0][1]]
+    return sa.select(left).select_from(j).where(null_check.is_(None))
+
+
+def right_orphans(left, right, column_pairs):
+    """Rows in `right` with no match in `left` (flipped outer join)."""
+    return left_orphans(right, left,
+                        [(rc, lc) for lc, rc in column_pairs])
+
+
+def matched_rows(left, right, column_pairs):
+    """
+    Rows in `left` that DO have a match in `right`.
+
+    Returns a Select over the inner join with all columns from both
+    sides available.
+    """
+    j = inner_join(left, right, column_pairs)
+    return sa.select(left, right).select_from(j)
+
+
+# ── Layer 2: profiling / summarization ────────────────────────
+
+def top_n(selectable, order_col, n=10, *, desc=True):
+    """
+    Window-based TOP N over any selectable.
+
+    Uses ROW_NUMBER() so this composes as a CTE without dialect-specific
+    LIMIT/TOP syntax.
+    """
+    col = selectable.c[order_col] if isinstance(order_col, str) else order_col
+    direction = col.desc() if desc else col.asc()
+    rn = sa.func.row_number().over(order_by=direction).label("_rn")
+
+    numbered = sa.select(selectable, rn).subquery("_ranked")
+    return sa.select(numbered).where(numbered.c._rn <= n)
+
+
+def count_by(selectable, group_cols, *, count_label="cnt"):
+    """
+    GROUP BY + COUNT(*) over any selectable.
+
+    group_cols: list of column names (str) or column objects.
+    """
+    cols = [
+        selectable.c[c] if isinstance(c, str) else c
+        for c in group_cols
+    ]
+    return (
+        sa.select(*cols, sa.func.count().label(count_label))
+        .select_from(selectable)
+        .group_by(*cols)
+    )
+
+
+def coverage(left, right, column_pairs):
+    """
+    Single-row coverage summary for a join candidate.
+
+    Returns a Select with:
+      total_left, matched, orphaned, coverage_ratio
+    """
+    j = outer_join(left, right, column_pairs)
+    left_key = left.c[column_pairs[0][0]]
+    right_check = right.c[column_pairs[0][1]]
+
+    total = sa.func.count(sa.distinct(left_key)).label("total_left")
+    matched = sa.func.count(sa.distinct(
+        sa.case((right_check.isnot(None), left_key))
+    )).label("matched")
+
+    return sa.select(
+        total,
+        matched,
+        (total - matched).label("orphaned"),
+        (sa.cast(matched, sa.Float)
+         / sa.func.nullif(total, 0)).label("coverage_ratio"),
+    ).select_from(j)
+
+
+def profile_column(selectable, col_name):
+    """
+    Descriptive stats for a single column in any selectable.
+
+    Returns a single-row Select with:
+      total, non_null, null_count, ndv (distinct), min_val, max_val
+    """
+    col = selectable.c[col_name]
+    return sa.select(
+        sa.func.count().label("total"),
+        sa.func.count(col).label("non_null"),
+        (sa.func.count() - sa.func.count(col)).label("null_count"),
+        sa.func.count(sa.distinct(col)).label("ndv"),
+        sa.func.min(col).label("min_val"),
+        sa.func.max(col).label("max_val"),
+    ).select_from(selectable)
+
+
+# ── JoinCandidate: thin wrapper holding the pair + metadata ───
+
+class JoinCandidate:
+    """
+    A potential join path between two selectables.
+
+    This is a data holder — the actual query generation is in the
+    composable functions above.  JoinCandidate provides convenience
+    methods that delegate to them.
+    """
+
+    __slots__ = ("left", "right", "column_pairs",
+                 "confidence", "source")
+
+    def __init__(self, left, right, column_pairs,
+                 confidence, source):
+        self.left = left              # any sa.FromClause
+        self.right = right            # any sa.FromClause
+        self.column_pairs = column_pairs  # [(left_col, right_col), ...]
+        self.confidence = confidence  # 0.0–1.0
+        self.source = source          # 'declared_fk', 'name_match', 'evidence'
+
+    # -- delegating convenience methods --
+
+    def condition(self):
+        """Equi-join ON clause."""
+        return equi_condition(self.left, self.right, self.column_pairs)
+
+    def outer(self):
+        """LEFT OUTER JOIN FromClause."""
+        return outer_join(self.left, self.right, self.column_pairs)
+
+    def inner(self):
+        """INNER JOIN FromClause."""
+        return inner_join(self.left, self.right, self.column_pairs)
+
+    def left_orphans(self):
+        """Left rows with no right match."""
+        return left_orphans(self.left, self.right, self.column_pairs)
+
+    def right_orphans(self):
+        """Right rows with no left match."""
+        return right_orphans(self.left, self.right, self.column_pairs)
+
+    def matched(self):
+        """Rows that match on both sides."""
+        return matched_rows(self.left, self.right, self.column_pairs)
+
+    def coverage(self):
+        """Single-row coverage summary."""
+        return coverage(self.left, self.right, self.column_pairs)
+
+    # For backward compat with SchemaCollection internals
+    @property
+    def left_table(self):
+        return self.left
+
+    @property
+    def right_table(self):
+        return self.right
+
+    def __repr__(self):
+        left_name = getattr(self.left, 'name', str(self.left))
+        right_name = getattr(self.right, 'name', str(self.right))
+        pairs = ", ".join(f"{l}={r}" for l, r in self.column_pairs)
+        return (f"JoinCandidate({left_name} ↔ {right_name} "
+                f"on [{pairs}] conf={self.confidence:.2f} "
+                f"via {self.source})")
+
+
+class SchemaCollection:
+    """
+    A federated collection of SQLAlchemy MetaData from multiple schemas,
+    with declared and inferred join paths.
+
+    The collection is built by querying the evidence/fact layer or by
+    explicitly listing schemas. Once built, it provides:
+      - Unified table lookup: coll['schema.table'] or coll.table('name')
+      - Declared FK joins (from snapshots)
+      - Inferred joins (from column name + type matching across schemas)
+      - join_condition(table_a, table_b) → best ON clause
+    """
+
+    def __init__(self, duck, metadata, schemas, join_candidates):
+        self._duck = duck
+        self.metadata = metadata
+        self.schemas = schemas  # [(dataserver_id, catalog, schema), ...]
+        self.join_candidates = join_candidates  # [JoinCandidate, ...]
+
+    def __getitem__(self, table_key):
+        """Look up a table by 'schema.table' key."""
+        if table_key in self.metadata.tables:
+            return self.metadata.tables[table_key]
+        # Try without schema qualification
+        for key, table in self.metadata.tables.items():
+            if key.endswith(f".{table_key}") or table.name == table_key:
+                return table
+        raise KeyError(f"Table {table_key!r} not found. "
+                       f"Available: {list(self.metadata.tables.keys())}")
+
+    def tables(self):
+        """All tables in the collection."""
+        return dict(self.metadata.tables)
+
+    def joins_for(self, table):
+        """Return all JoinCandidates involving this table."""
+        return [
+            jc for jc in self.join_candidates
+            if jc.left_table is table or jc.right_table is table
+        ]
+
+    def join_condition(self, left, right):
+        """
+        Best join condition between two tables.
+
+        Checks declared FKs first, then inferred candidates ranked by
+        confidence.  Returns a SQLAlchemy BinaryExpression or None.
+        """
+        candidates = [
+            jc for jc in self.join_candidates
+            if (jc.left_table is left and jc.right_table is right)
+            or (jc.left_table is right and jc.right_table is left)
+        ]
+        if not candidates:
+            return None
+        # Prefer declared FK, then highest confidence
+        candidates.sort(
+            key=lambda jc: (jc.source != "declared_fk", -jc.confidence)
+        )
+        return candidates[0].condition()
+
+    @classmethod
+    def from_schemas(cls, duck, schema_specs):
+        """
+        Build a collection from explicit schema specifications.
+
+        Parameters
+        ----------
+        duck : duckdb.DuckDBPyConnection
+        schema_specs : list of (dataserver_id, catalog_name, schema_name)
+
+        Returns
+        -------
+        SchemaCollection
+        """
+        metadata = sa.MetaData()
+        for ds_id, catalog, schema in schema_specs:
+            build_metadata(duck, ds_id, catalog, schema, metadata=metadata)
+
+        join_candidates = _find_declared_joins(metadata)
+        join_candidates += _infer_cross_schema_joins(metadata)
+
+        return cls(duck, metadata, list(schema_specs), join_candidates)
+
+    @classmethod
+    def from_evidence(cls, duck, where_clause, bind_params=None):
+        """
+        Build a collection by querying the evidence layer.
+
+        Finds schemas that have facts matching the predicate, then builds
+        MetaData for each and infers cross-schema joins.
+
+        Parameters
+        ----------
+        duck : duckdb.DuckDBPyConnection
+        where_clause : str
+            SQL WHERE predicate over rule4_metadata_fact columns.
+            Example: "fact_type = 'fk_topology_role'
+                      AND fact_value LIKE '%finance%'"
+        bind_params : list, optional
+            Bind parameters for the where clause (use ? placeholders).
+
+        Returns
+        -------
+        SchemaCollection
+        """
+        sql = (
+            "SELECT DISTINCT dataserver_id, catalog_name, schema_name "
+            "FROM rule4_metadata_fact "
+            f"WHERE {where_clause}"
+        )
+        rows = duck.execute(sql, bind_params or []).fetchall()
+        schema_specs = [(r[0], r[1], r[2]) for r in rows]
+
+        if not schema_specs:
+            return cls(duck, sa.MetaData(), [], [])
+
+        return cls.from_schemas(duck, schema_specs)
+
+    @classmethod
+    def from_topic(cls, duck, topic_pattern):
+        """
+        Build a collection for schemas matching a topic/domain pattern.
+
+        Convenience wrapper over from_evidence that queries for
+        schema-level topic facts.
+
+        Parameters
+        ----------
+        duck : duckdb.DuckDBPyConnection
+        topic_pattern : str
+            SQL LIKE pattern, e.g. '%finance%', '%healthcare%'
+
+        Returns
+        -------
+        SchemaCollection
+        """
+        return cls.from_evidence(
+            duck,
+            "fact_type IN ('schema_topic', 'fk_topology_role', "
+            "'column_comment', 'udt_label') "
+            "AND LOWER(fact_value) LIKE LOWER(?)",
+            [topic_pattern]
+        )
+
+
+def _find_declared_joins(metadata):
+    """Extract JoinCandidates from declared ForeignKeyConstraints."""
+    candidates = []
+    for table in metadata.tables.values():
+        for fk_constraint in table.foreign_key_constraints:
+            # Resolve referenced table
+            ref_cols = list(fk_constraint.referred_table.columns)
+            if not ref_cols:
+                continue
+            ref_table = fk_constraint.referred_table
+
+            pairs = []
+            for fk_elem in fk_constraint.elements:
+                local_col = fk_elem.parent.name
+                remote_col = fk_elem.column.name
+                pairs.append((local_col, remote_col))
+
+            if pairs:
+                candidates.append(JoinCandidate(
+                    left=table,
+                    right=ref_table,
+                    column_pairs=pairs,
+                    confidence=1.0,
+                    source="declared_fk",
+                ))
+
+    return candidates
+
+
+def _infer_cross_schema_joins(metadata, min_confidence=0.5):
+    """
+    Infer join candidates across schemas by column name + type matching.
+
+    Rules:
+      - Exact column name match + compatible type → confidence 0.7
+      - Column name ends with _id and matches a PK column → confidence 0.85
+      - Multiple columns match between two tables → boost confidence
+      - Skip pairs already connected by declared FK
+    """
+    candidates = []
+    tables = list(metadata.tables.values())
+
+    # Index: column_name → [(table, column)]
+    col_index = {}
+    for table in tables:
+        for col in table.columns:
+            col_index.setdefault(col.name, []).append((table, col))
+
+    # Find declared FK pairs to skip
+    declared_pairs = set()
+    for table in tables:
+        for fk in table.foreign_keys:
+            declared_pairs.add(
+                (fk.parent.table.key, fk.column.table.key)
+            )
+            declared_pairs.add(
+                (fk.column.table.key, fk.parent.table.key)
+            )
+
+    # For each column name appearing in 2+ tables
+    seen_table_pairs = {}  # (left_key, right_key) → [(left_col, right_col)]
+
+    for col_name, occurrences in col_index.items():
+        if len(occurrences) < 2:
+            continue
+
+        for i, (table_a, col_a) in enumerate(occurrences):
+            for table_b, col_b in occurrences[i + 1:]:
+                if table_a is table_b:
+                    continue
+                # Skip same-schema if already FK-connected
+                pair_key = (table_a.key, table_b.key)
+                if pair_key in declared_pairs:
+                    continue
+                # Check type compatibility
+                if not _types_compatible(col_a.type, col_b.type):
+                    continue
+                seen_table_pairs.setdefault(pair_key, []).append(
+                    (col_a.name, col_b.name)
+                )
+
+    # Score each table pair
+    for (left_key, right_key), col_pairs in seen_table_pairs.items():
+        left_table = metadata.tables[left_key]
+        right_table = metadata.tables[right_key]
+
+        base_conf = 0.5
+
+        # Boost for _id columns matching PK
+        for lc, rc in col_pairs:
+            if lc.endswith("_id"):
+                # Check if it's a PK in either table
+                left_pk_names = {c.name for c in left_table.primary_key.columns}
+                right_pk_names = {c.name for c in right_table.primary_key.columns}
+                if lc in left_pk_names or rc in right_pk_names:
+                    base_conf = max(base_conf, 0.85)
+                else:
+                    base_conf = max(base_conf, 0.7)
+
+        # Boost for multiple matching columns
+        if len(col_pairs) >= 2:
+            base_conf = min(base_conf + 0.1, 0.95)
+        if len(col_pairs) >= 3:
+            base_conf = min(base_conf + 0.1, 0.95)
+
+        if base_conf >= min_confidence:
+            candidates.append(JoinCandidate(
+                left=left_table,
+                right=right_table,
+                column_pairs=col_pairs,
+                confidence=base_conf,
+                source="name_match",
+            ))
+
+    return candidates
