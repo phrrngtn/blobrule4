@@ -792,6 +792,185 @@ def profile_column(selectable, col_name):
     ).select_from(selectable)
 
 
+# ── Layer 3: regex domain probing ─────────────────────────────
+#
+# The pattern: UNPIVOT a selectable to (column_name, val, freq),
+# then probe against a regex pattern with length pre-filtering.
+# Works on any selectable — table, CTE, subquery, sampled subset.
+
+
+def unpivot_to_kv(selectable, columns=None):
+    """
+    UNPIVOT a selectable into (column_name, val, freq) rows.
+
+    All columns are cast to VARCHAR.  Groups by (column_name, val)
+    to get distinct values with frequency counts.
+
+    This is raw SQL because SQLAlchemy core doesn't support UNPIVOT.
+    Returns the SQL string and expects the caller to execute it as
+    a CREATE TEMP TABLE or CTE.
+
+    Parameters
+    ----------
+    selectable : str
+        Table name or subquery alias to unpivot.
+    columns : list of str, optional
+        Columns to include.  Default: all columns via COLUMNS(*).
+    """
+    if columns:
+        cast_expr = ", ".join(f'"{c}"::VARCHAR' for c in columns)
+        col_ref = ", ".join(f'"{c}"' for c in columns)
+    else:
+        cast_expr = "COLUMNS(*)::VARCHAR"
+        col_ref = "COLUMNS(*)"
+
+    return f"""
+        WITH _STRINGIFIED AS (
+            SELECT {cast_expr} FROM {selectable}
+        ),
+        _KV AS (
+            UNPIVOT _STRINGIFIED ON {col_ref}
+            INTO NAME column_name VALUE val
+        )
+        SELECT column_name, val, COUNT(*) AS freq
+        FROM _KV
+        WHERE val IS NOT NULL
+        GROUP BY column_name, val
+    """
+
+
+def regex_probe(kv_table, pattern, *,
+                min_len=1, max_len=100000, requires=None):
+    """
+    Probe a (column_name, val, freq) table against a single regex pattern.
+
+    Returns a SQLAlchemy Select with per-column hit stats:
+      column_name, total_rows, ndv, full_rows, full_ndv, sub_rows, sub_ndv
+
+    The query shape:
+        SELECT column_name, SUM(freq), COUNT(*),
+               SUM(freq) FILTER (WHERE regexp_full_match(val, :pat)),
+               ...
+        FROM kv_table
+        WHERE LENGTH(val) BETWEEN :min AND :max
+          AND CONTAINS(val, :requires)   -- optional
+        GROUP BY column_name
+
+    Parameters
+    ----------
+    kv_table : sa.FromClause
+        Must have columns: column_name, val, freq
+    pattern : str
+        Regex pattern to test.
+    min_len, max_len : int
+        Length pre-filter bounds.
+    requires : str, optional
+        Substring that must be present (cheap pre-screen).
+    """
+    val = kv_table.c.val
+    freq = kv_table.c.freq
+    col_name = kv_table.c.column_name
+
+    # Pre-filter conditions
+    conditions = [
+        sa.func.length(val) >= sa.literal(min_len),
+        sa.func.length(val) <= sa.literal(max_len),
+    ]
+    if requires:
+        conditions.append(sa.func.contains(val, sa.literal(requires)))
+
+    # regexp functions — use sa.literal_column for DuckDB-specific syntax
+    pat = sa.bindparam("pattern", value=pattern, type_=sa.String)
+    full_match = sa.func.regexp_full_match(val, pat)
+    sub_match = sa.func.regexp_matches(val, pat)
+
+    return (
+        sa.select(
+            col_name,
+            sa.func.sum(freq).label("total_rows"),
+            sa.func.count().label("ndv"),
+            sa.func.sum(freq).filter(full_match).label("full_rows"),
+            sa.func.count().filter(full_match).label("full_ndv"),
+            sa.func.sum(freq).filter(sub_match).label("sub_rows"),
+            sa.func.count().filter(sub_match).label("sub_ndv"),
+        )
+        .select_from(kv_table)
+        .where(sa.and_(*conditions))
+        .group_by(col_name)
+    )
+
+
+def regex_probe_all(duck, kv_table_name, patterns):
+    """
+    Probe a KV table against multiple patterns, one vectorized scan each.
+
+    This is the Python orchestrator that fires one query per pattern
+    (enabling DuckDB to vectorize each scan) rather than cross-joining.
+
+    Parameters
+    ----------
+    duck : duckdb.DuckDBPyConnection
+    kv_table_name : str
+        Name of the (column_name, val, freq) table in DuckDB.
+    patterns : list of dict
+        Each dict has: label, pattern, category, min_len, max_len, requires
+
+    Returns
+    -------
+    list of (column_name, label, category, total_rows,
+             full_rows, full_ndv, sub_rows, sub_ndv)
+    """
+    results = []
+    for p in patterns:
+        where_parts = [
+            f"LENGTH(val) BETWEEN {p.get('min_len', 1)} AND {p.get('max_len', 100000)}"
+        ]
+        req = p.get("requires")
+        if req:
+            where_parts.append(f"CONTAINS(val, '{req}')")
+
+        sql = f"""
+            SELECT column_name,
+                   SUM(freq) AS total_rows,
+                   COUNT(*) AS ndv,
+                   SUM(freq) FILTER (WHERE regexp_full_match(val, ?)) AS full_rows,
+                   COUNT(*) FILTER (WHERE regexp_full_match(val, ?)) AS full_ndv,
+                   SUM(freq) FILTER (WHERE regexp_matches(val, ?)) AS sub_rows,
+                   COUNT(*) FILTER (WHERE regexp_matches(val, ?)) AS sub_ndv
+            FROM {kv_table_name}
+            WHERE {' AND '.join(where_parts)}
+            GROUP BY column_name
+            HAVING SUM(freq) FILTER (WHERE regexp_full_match(val, ?)) > 0
+                OR SUM(freq) FILTER (WHERE regexp_matches(val, ?))
+                   > SUM(freq) * 0.05
+        """
+        pat = p["pattern"]
+        rows = duck.execute(sql, [pat] * 6).fetchall()
+        for col, total, ndv, fr, fn, sr, sn in rows:
+            results.append((col, p["label"], p.get("category", ""),
+                            total, fr or 0, fn or 0, sr or 0, sn or 0))
+
+    return results
+
+
+# DuckDB macro equivalent — register this once, call per-pattern:
+DUCKDB_REGEX_PROBE_MACRO = """
+CREATE OR REPLACE MACRO regex_probe(kv_table, pattern, min_len, max_len, requires) AS TABLE
+    SELECT column_name,
+           SUM(freq) AS total_rows,
+           COUNT(*) AS ndv,
+           SUM(freq) FILTER (WHERE regexp_full_match(val, pattern)) AS full_rows,
+           COUNT(*) FILTER (WHERE regexp_full_match(val, pattern)) AS full_ndv,
+           SUM(freq) FILTER (WHERE regexp_matches(val, pattern)) AS sub_rows,
+           COUNT(*) FILTER (WHERE regexp_matches(val, pattern)) AS sub_ndv
+    FROM query_table(kv_table)
+    WHERE LENGTH(val) BETWEEN min_len AND max_len
+      AND (requires IS NULL OR CONTAINS(val, requires))
+    GROUP BY column_name
+    HAVING full_ndv > 0 OR sub_rows > total_rows * 0.05;
+"""
+
+
 # ── JoinCandidate: thin wrapper holding the pair + metadata ───
 
 class JoinCandidate:
