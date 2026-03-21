@@ -61,6 +61,7 @@ TYPE_RULES = [
     ("real", "measure_float"),
     ("float4", "measure_float"),
     ("float8", "measure_float"),
+    ("double", "measure_float"),
     ("double precision", "measure_float"),
     ("bit", "flag_dimension"),
     ("boolean", "flag_dimension"),
