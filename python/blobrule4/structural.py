@@ -97,10 +97,15 @@ DEFAULT_RULES = [
 ]
 
 
-def _register_reference_tables(duck):
-    """Register classification rule tables as DataFrames."""
-    import pyarrow as pa
+_REFS_REGISTERED = set()
 
+def _register_reference_tables(duck):
+    """Register classification rule tables as DataFrames (idempotent)."""
+    if id(duck) in _REFS_REGISTERED:
+        return
+    _REFS_REGISTERED.add(id(duck))
+
+    import pyarrow as pa
     duck.register("_suffix_rules", pa.table({
         "suffix": [s for s, _ in SUFFIX_RULES],
         "semantic_role": [r for _, r in SUFFIX_RULES],
@@ -112,8 +117,13 @@ def _register_reference_tables(duck):
     }))
 
 
+_UDFS_REGISTERED = set()
+
 def _register_udfs(duck):
-    """Register Python UDFs for logic that needs regex."""
+    """Register Python UDFs for logic that needs regex (idempotent)."""
+    if id(duck) in _UDFS_REGISTERED:
+        return
+    _UDFS_REGISTERED.add(id(duck))
 
     def classify_default(default_def):
         """Classify a default expression into a semantic hint."""
