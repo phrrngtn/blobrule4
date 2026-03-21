@@ -1,0 +1,27 @@
+name: column_comments
+description: Column descriptions from MS_Description extended properties
+dialect: sqlserver
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "SCHEMA_NAME(t.schema_id) = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "t.name = :table_name"
+sql: |
+  SELECT
+      SCHEMA_NAME(t.schema_id)             AS table_schema,
+      t.name                               AS table_name,
+      COL_NAME(ep.major_id, ep.minor_id)   AS column_name,
+      ep.name                              AS property_name,
+      CAST(ep.value AS nvarchar(4000))     AS property_value
+  FROM sys.extended_properties AS ep
+  JOIN sys.tables AS t
+      ON t.object_id = ep.major_id
+  WHERE ep.class = 1
+    AND ep.minor_id > 0
+    AND ep.name = 'MS_Description'

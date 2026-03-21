@@ -1,0 +1,28 @@
+name: check_constraints
+description: Check constraints via INFORMATION_SCHEMA (portable)
+dialect: information_schema
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter. Omit for all schemas.
+    where: "tc.constraint_schema = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter. Omit for all tables.
+    where: "tc.table_name = :table_name"
+sql: |
+  SELECT
+      tc.constraint_catalog,
+      tc.constraint_schema,
+      tc.constraint_name,
+      tc.table_schema,
+      tc.table_name,
+      cc.check_clause
+  FROM information_schema.table_constraints AS tc
+  JOIN information_schema.check_constraints AS cc
+      ON cc.constraint_catalog = tc.constraint_catalog
+     AND cc.constraint_schema = tc.constraint_schema
+     AND cc.constraint_name = tc.constraint_name
+  WHERE tc.constraint_type = 'CHECK'

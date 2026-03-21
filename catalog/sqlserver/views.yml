@@ -1,0 +1,25 @@
+name: views
+description: View definitions with updatability and source text
+dialect: sqlserver
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "SCHEMA_NAME(v.schema_id) = :schema_name"
+  view_name:
+    type: string
+    required: false
+    description: View name filter. Omit for all views.
+    where: "v.name = :view_name"
+sql: |
+  SELECT
+      SCHEMA_NAME(v.schema_id)  AS view_schema,
+      v.name                    AS view_name,
+      v.create_date,
+      v.modify_date,
+      v.with_check_option,
+      OBJECTPROPERTY(v.object_id, 'IsIndexed')  AS is_indexed,
+      OBJECT_DEFINITION(v.object_id)             AS view_definition
+  FROM sys.views AS v
+  WHERE v.is_ms_shipped = 0

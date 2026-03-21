@@ -1,0 +1,30 @@
+name: column_comments
+description: Column comments from pg_description
+dialect: postgresql
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "nsp.nspname = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "cl.relname = :table_name"
+sql: |
+  SELECT
+      nsp.nspname                         AS table_schema,
+      cl.relname                          AS table_name,
+      att.attname                         AS column_name,
+      col_description(cl.oid, att.attnum) AS column_comment
+  FROM pg_attribute AS att
+  JOIN pg_class AS cl ON cl.oid = att.attrelid
+  JOIN pg_namespace AS nsp ON nsp.oid = cl.relnamespace
+  WHERE cl.relkind IN ('r', 'p', 'v', 'm')
+    AND att.attnum > 0
+    AND NOT att.attisdropped
+    AND col_description(cl.oid, att.attnum) IS NOT NULL
+    AND nsp.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+    AND nsp.nspname NOT LIKE 'pg_temp_%'
+    AND nsp.nspname NOT LIKE 'pg_toast_temp_%'

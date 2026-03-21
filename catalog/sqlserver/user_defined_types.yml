@@ -1,0 +1,35 @@
+name: user_defined_types
+description: User-defined types (aliases, CLR types, table types) with base type info
+dialect: sqlserver
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "SCHEMA_NAME(t.schema_id) = :schema_name"
+  type_name:
+    type: string
+    required: false
+    description: Type name filter. Omit for all types.
+    where: "t.name = :type_name"
+sql: |
+  SELECT
+      SCHEMA_NAME(t.schema_id)   AS type_schema,
+      t.name                     AS type_name,
+      CASE
+          WHEN t.is_table_type = 1 THEN 'TABLE_TYPE'
+          WHEN t.is_assembly_type = 1 THEN 'CLR_TYPE'
+          ELSE 'ALIAS_TYPE'
+      END                        AS type_kind,
+      bt.name                    AS base_type_name,
+      t.max_length,
+      t.precision,
+      t.scale,
+      t.is_nullable,
+      t.collation_name,
+      OBJECT_DEFINITION(t.rule_object_id) AS rule_definition
+  FROM sys.types AS t
+  LEFT JOIN sys.types AS bt
+      ON bt.user_type_id = t.system_type_id
+     AND bt.is_user_defined = 0
+  WHERE t.is_user_defined = 1

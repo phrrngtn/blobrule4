@@ -1,0 +1,27 @@
+name: check_constraints
+description: Check constraints with clause text, disabled/trusted state
+dialect: sqlserver
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "SCHEMA_NAME(t.schema_id) = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "t.name = :table_name"
+sql: |
+  SELECT
+      SCHEMA_NAME(t.schema_id)  AS table_schema,
+      t.name                    AS table_name,
+      cc.name                   AS constraint_name,
+      COL_NAME(cc.parent_object_id, cc.parent_column_id) AS column_name,
+      cc.is_disabled,
+      cc.is_not_trusted,
+      cc.is_system_named,
+      cc.definition             AS check_clause
+  FROM sys.check_constraints AS cc
+  JOIN sys.tables AS t
+      ON t.object_id = cc.parent_object_id

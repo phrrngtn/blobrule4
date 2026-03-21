@@ -1,0 +1,42 @@
+name: partitioning
+description: Partition schemes, functions, columns, and boundary values
+dialect: sqlserver
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "SCHEMA_NAME(t.schema_id) = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "t.name = :table_name"
+sql: |
+  SELECT
+      SCHEMA_NAME(t.schema_id)             AS table_schema,
+      t.name                               AS table_name,
+      ps.name                              AS partition_scheme,
+      pf.name                              AS partition_function,
+      COL_NAME(ic.object_id, ic.column_id) AS partition_column,
+      pf.fanout                            AS partition_count,
+      pf.boundary_value_on_right,
+      TYPE_NAME(pp.system_type_id)         AS boundary_type,
+      prv.boundary_id,
+      CAST(prv.value AS nvarchar(256))     AS boundary_value
+  FROM sys.tables AS t
+  JOIN sys.indexes AS i
+      ON i.object_id = t.object_id AND i.index_id <= 1
+  JOIN sys.partition_schemes AS ps
+      ON ps.data_space_id = i.data_space_id
+  JOIN sys.partition_functions AS pf
+      ON pf.function_id = ps.function_id
+  JOIN sys.index_columns AS ic
+      ON ic.object_id = i.object_id
+     AND ic.index_id = i.index_id
+     AND ic.partition_ordinal > 0
+  JOIN sys.partition_parameters AS pp
+      ON pp.function_id = pf.function_id
+  LEFT JOIN sys.partition_range_values AS prv
+      ON prv.function_id = pf.function_id
+     AND prv.parameter_id = pp.parameter_id

@@ -1,0 +1,36 @@
+name: user_defined_types
+description: Domain types, composite types, enums, and ranges with base type info
+dialect: postgresql
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "nsp.nspname = :schema_name"
+  type_name:
+    type: string
+    required: false
+    description: Type name filter. Omit for all types.
+    where: "t.typname = :type_name"
+sql: |
+  SELECT
+      nsp.nspname                     AS type_schema,
+      t.typname                       AS type_name,
+      CASE t.typtype
+          WHEN 'd' THEN 'DOMAIN'
+          WHEN 'c' THEN 'COMPOSITE'
+          WHEN 'e' THEN 'ENUM'
+          WHEN 'r' THEN 'RANGE'
+      END                             AS type_kind,
+      format_type(t.typbasetype, t.typtypmod) AS base_type_name,
+      t.typnotnull                    AS is_not_null,
+      t.typdefault                    AS default_value,
+      pg_get_constraintdef(con.oid)   AS check_clause
+  FROM pg_type AS t
+  JOIN pg_namespace AS nsp ON nsp.oid = t.typnamespace
+  LEFT JOIN pg_constraint AS con
+      ON con.contypid = t.oid AND con.contype = 'c'
+  WHERE t.typtype IN ('d', 'c', 'e', 'r')
+    AND nsp.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+    AND nsp.nspname NOT LIKE 'pg_temp_%'
+    AND nsp.nspname NOT LIKE 'pg_toast_temp_%'

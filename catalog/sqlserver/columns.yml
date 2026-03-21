@@ -25,7 +25,11 @@ sql: |
       c.is_nullable,
       c.is_identity,
       c.is_computed,
+      c.is_sparse,
+      c.is_hidden,
+      c.generated_always_type_desc,
       c.collation_name,
+      SCHEMA_NAME(tp.schema_id) AS type_schema,
       dc.definition             AS default_definition,
       cc.definition             AS computed_definition
   FROM sys.columns AS c

@@ -25,13 +25,21 @@ from blobrule4.models import Base, SchemaSnapshot, SchemaSnapshotPatch, SAMPLE_L
 # Nesting keys per kind — determines the nested JSON structure
 # and therefore the semantic quality of the diffs
 NEST_KEYS = {
-    "tables":       '["table_schema", "table_name"]',
-    "columns":      '["table_schema", "table_name", "column_name"]',
-    "primary_keys": '["table_schema", "table_name", "constraint_name", "column_name"]',
-    "foreign_keys": '["fk_schema", "fk_table", "constraint_name", "fk_column"]',
-    "indexes":      '["table_schema", "table_name", "index_name", "column_name"]',
-    "triggers":     '["table_schema", "table_name", "trigger_name"]',
-    "callables":    '["object_schema", "object_name"]',
+    "tables":              '["table_schema", "table_name"]',
+    "columns":             '["table_schema", "table_name", "column_name"]',
+    "primary_keys":        '["table_schema", "table_name", "constraint_name", "column_name"]',
+    "foreign_keys":        '["fk_schema", "fk_table", "constraint_name", "fk_column"]',
+    "indexes":             '["table_schema", "table_name", "index_name", "column_name"]',
+    "triggers":            '["table_schema", "table_name", "trigger_name"]',
+    "callables":           '["object_schema", "object_name"]',
+    "check_constraints":   '["table_schema", "table_name", "constraint_name"]',
+    "unique_constraints":  '["table_schema", "table_name", "constraint_name", "column_name"]',
+    "views":               '["view_schema", "view_name"]',
+    "column_comments":     '["table_schema", "table_name", "column_name"]',
+    "user_defined_types":  '["type_schema", "type_name"]',
+    "partitioning":        '["table_schema", "table_name", "partition_column"]',
+    "temporal_tables":     '["table_schema", "table_name"]',
+    "synonyms":            '["synonym_schema", "synonym_name"]',
 }
 
 # Fields to strip before nesting (noisy, non-semantic)

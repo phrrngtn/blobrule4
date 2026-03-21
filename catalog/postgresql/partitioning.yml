@@ -1,0 +1,40 @@
+name: partitioning
+description: Partition strategy, key columns, and child partitions with bounds
+dialect: postgresql
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "nsp.nspname = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "parent.relname = :table_name"
+sql: |
+  SELECT
+      nsp.nspname                           AS table_schema,
+      parent.relname                        AS table_name,
+      CASE pt.partstrat
+          WHEN 'l' THEN 'LIST'
+          WHEN 'r' THEN 'RANGE'
+          WHEN 'h' THEN 'HASH'
+      END                                   AS partition_strategy,
+      att.attname                           AS partition_column,
+      child_nsp.nspname                     AS child_schema,
+      child.relname                         AS child_table,
+      pg_get_expr(child.relpartbound, child.oid) AS partition_bound
+  FROM pg_partitioned_table AS pt
+  JOIN pg_class AS parent ON parent.oid = pt.partrelid
+  JOIN pg_namespace AS nsp ON nsp.oid = parent.relnamespace
+  CROSS JOIN LATERAL unnest(pt.partattrs)
+      WITH ORDINALITY AS u(attnum, ordinality)
+  LEFT JOIN pg_attribute AS att
+      ON att.attrelid = parent.oid AND att.attnum = u.attnum
+  LEFT JOIN pg_inherits AS inh ON inh.inhparent = parent.oid
+  LEFT JOIN pg_class AS child ON child.oid = inh.inhrelid
+  LEFT JOIN pg_namespace AS child_nsp ON child_nsp.oid = child.relnamespace
+  WHERE nsp.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+    AND nsp.nspname NOT LIKE 'pg_temp_%'
+    AND nsp.nspname NOT LIKE 'pg_toast_temp_%'

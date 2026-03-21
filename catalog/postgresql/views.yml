@@ -1,0 +1,30 @@
+name: views
+description: View definitions with source text and properties
+dialect: postgresql
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "nsp.nspname = :schema_name"
+  view_name:
+    type: string
+    required: false
+    description: View name filter. Omit for all views.
+    where: "cl.relname = :view_name"
+sql: |
+  SELECT
+      nsp.nspname              AS view_schema,
+      cl.relname               AS view_name,
+      CASE cl.relkind
+          WHEN 'v' THEN 'VIEW'
+          WHEN 'm' THEN 'MATERIALIZED VIEW'
+      END                      AS view_type,
+      obj_description(cl.oid)  AS view_comment,
+      pg_get_viewdef(cl.oid, true) AS view_definition
+  FROM pg_class AS cl
+  JOIN pg_namespace AS nsp ON nsp.oid = cl.relnamespace
+  WHERE cl.relkind IN ('v', 'm')
+    AND nsp.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+    AND nsp.nspname NOT LIKE 'pg_temp_%'
+    AND nsp.nspname NOT LIKE 'pg_toast_temp_%'

@@ -1,0 +1,37 @@
+name: check_constraints
+description: Check constraints with clause text
+dialect: postgresql
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "nsp.nspname = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "cl.relname = :table_name"
+sql: |
+  SELECT
+      nsp.nspname                AS table_schema,
+      cl.relname                 AS table_name,
+      con.conname                AS constraint_name,
+      CASE WHEN con.conkey IS NOT NULL AND array_length(con.conkey, 1) = 1
+           THEN att.attname
+           ELSE NULL
+      END                        AS column_name,
+      con.convalidated           AS is_validated,
+      pg_get_constraintdef(con.oid) AS check_clause
+  FROM pg_constraint AS con
+  JOIN pg_class AS cl ON cl.oid = con.conrelid
+  JOIN pg_namespace AS nsp ON nsp.oid = cl.relnamespace
+  LEFT JOIN pg_attribute AS att
+      ON att.attrelid = con.conrelid
+     AND con.conkey IS NOT NULL
+     AND array_length(con.conkey, 1) = 1
+     AND att.attnum = con.conkey[1]
+  WHERE con.contype = 'c'
+    AND nsp.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+    AND nsp.nspname NOT LIKE 'pg_temp_%'
+    AND nsp.nspname NOT LIKE 'pg_toast_temp_%'

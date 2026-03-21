@@ -1,0 +1,32 @@
+name: temporal_tables
+description: Temporal table period columns and history table details (SQL Server 2016+)
+dialect: sqlserver
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "SCHEMA_NAME(t.schema_id) = :schema_name"
+  table_name:
+    type: string
+    required: false
+    description: Table filter (exact match). Omit for all tables.
+    where: "t.name = :table_name"
+sql: |
+  SELECT
+      SCHEMA_NAME(t.schema_id)                   AS table_schema,
+      t.name                                     AS table_name,
+      t.temporal_type_desc,
+      SCHEMA_NAME(ht.schema_id)                  AS history_schema,
+      ht.name                                    AS history_table_name,
+      per.name                                   AS period_name,
+      COL_NAME(t.object_id, per.start_column_id) AS period_start_column,
+      COL_NAME(t.object_id, per.end_column_id)   AS period_end_column,
+      t.history_retention_period,
+      t.history_retention_period_unit_desc
+  FROM sys.tables AS t
+  JOIN sys.periods AS per
+      ON per.object_id = t.object_id
+  LEFT JOIN sys.tables AS ht
+      ON ht.object_id = t.history_table_id
+  WHERE t.temporal_type IN (2, 4)

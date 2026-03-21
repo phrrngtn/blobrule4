@@ -26,7 +26,8 @@ sql: |
       col.character_maximum_length,
       col.numeric_precision,
       col.numeric_scale,
-      col.collation_name
+      col.collation_name,
+      col_description(cl.oid, att.attnum) AS column_comment
   FROM pg_attribute AS att
   JOIN pg_class AS cl ON cl.oid = att.attrelid
   JOIN pg_namespace AS nsp ON nsp.oid = cl.relnamespace

@@ -1,0 +1,23 @@
+name: views
+description: Views via INFORMATION_SCHEMA (portable)
+dialect: information_schema
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter. Omit for all schemas.
+    where: "table_schema = :schema_name"
+  view_name:
+    type: string
+    required: false
+    description: View name filter. Omit for all views.
+    where: "table_name = :view_name"
+sql: |
+  SELECT
+      table_catalog,
+      table_schema              AS view_schema,
+      table_name                AS view_name,
+      is_updatable,
+      check_option,
+      view_definition
+  FROM information_schema.views

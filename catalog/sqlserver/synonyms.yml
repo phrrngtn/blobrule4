@@ -1,0 +1,22 @@
+name: synonyms
+description: Synonyms with target object references
+dialect: sqlserver
+parameters:
+  schema_name:
+    type: string
+    required: false
+    description: Schema filter (exact match). Omit for all schemas.
+    where: "SCHEMA_NAME(s.schema_id) = :schema_name"
+  synonym_name:
+    type: string
+    required: false
+    description: Synonym name filter. Omit for all synonyms.
+    where: "s.name = :synonym_name"
+sql: |
+  SELECT
+      SCHEMA_NAME(s.schema_id)  AS synonym_schema,
+      s.name                    AS synonym_name,
+      s.create_date,
+      s.modify_date,
+      s.base_object_name
+  FROM sys.synonyms AS s
