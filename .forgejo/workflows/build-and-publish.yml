@@ -1,0 +1,32 @@
+name: Build and publish wheels
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
+
+      - name: Build wheel
+        run: uv build --python ${{ matrix.python }}
+
+      - name: Publish to Forgejo PyPI
+        env:
+          FORGEJO_TOKEN: ${{ secrets.PYPI_PUBLISH_TOKEN }}
+        run: |
+          uv publish \
+            --publish-url "${{ github.server_url }}/api/packages/${{ github.repository_owner }}/pypi" \
+            --token "$FORGEJO_TOKEN" \
+            dist/* || true
