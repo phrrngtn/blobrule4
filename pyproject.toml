@@ -1,0 +1,22 @@
+[project]
+name = "blobrule4"
+version = "0.2.0"
+description = "Schema survey and evolution tracking for SQL Server, PostgreSQL, and DuckDB"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Paul Harrington"}]
+dependencies = [
+    "duckdb>=1.0.0",
+    "sqlalchemy>=2.0",
+    "duckdb-engine>=0.13.0",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Repository = "https://github.com/phrrngtn/blobrule4"
+
+[tool.setuptools.packages.find]
+where = ["python"]
