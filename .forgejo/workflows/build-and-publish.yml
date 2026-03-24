@@ -23,6 +23,11 @@ jobs:
       - name: Build wheel
         run: uv build --python ${{ matrix.python }}
 
+      - name: Smoke test import
+        run: |
+          uv run --python ${{ matrix.python }} --with dist/*.whl \
+            --no-project python -c "import blobrule4; print('blobrule4 loaded OK')"
+
       - name: Publish to Forgejo PyPI
         env:
           FORGEJO_TOKEN: ${{ secrets.PYPI_PUBLISH_TOKEN }}
