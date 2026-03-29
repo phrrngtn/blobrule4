@@ -14,6 +14,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+socrata = [
+    "psycopg2-binary",
+    "pyarrow",
+]
 
 [project.urls]
 Repository = "https://github.com/phrrngtn/blobrule4"
